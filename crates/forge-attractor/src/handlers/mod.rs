@@ -2,6 +2,7 @@ use crate::{AttractorError, Graph, Node, NodeOutcome, RuntimeContext};
 use async_trait::async_trait;
 use std::sync::Arc;
 
+pub mod auto_gate;
 pub mod codergen;
 pub mod conditional;
 pub mod exit;
@@ -55,6 +56,7 @@ pub fn core_registry_with_codergen_backend(
         Arc::new(codergen::CodergenHandler::new(backend)),
     );
     registry.register_type("conditional", Arc::new(conditional::ConditionalHandler));
+    registry.register_type("auto.gate", Arc::new(auto_gate::AutoGateHandler));
     registry.register_type(
         "wait.human",
         Arc::new(wait_human::WaitHumanHandler::new(Arc::new(

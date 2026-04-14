@@ -50,6 +50,12 @@ impl HandlerRegistry {
         }
 
         let shape = node.attrs.get_str("shape").unwrap_or("box");
+
+        // Hexagons with auto_policy use the auto.gate handler instead of wait.human
+        if shape == "hexagon" && node.attrs.get_str("auto_policy").is_some() {
+            return "auto.gate".to_string();
+        }
+
         self.shape_to_type
             .get(shape)
             .cloned()
@@ -156,6 +162,20 @@ mod tests {
 
     #[test]
     fn resolve_handler_type_shape_mapping_expected_used_when_type_absent() {
+        let registry = HandlerRegistry::new();
+        let node = node_with_attrs("shape=hexagon");
+        assert_eq!(registry.resolve_handler_type(&node), "wait.human");
+    }
+
+    #[test]
+    fn resolve_handler_type_hexagon_with_auto_policy_expected_auto_gate() {
+        let registry = HandlerRegistry::new();
+        let node = node_with_attrs("shape=hexagon, auto_policy=\"findings_empty\"");
+        assert_eq!(registry.resolve_handler_type(&node), "auto.gate");
+    }
+
+    #[test]
+    fn resolve_handler_type_hexagon_without_auto_policy_expected_wait_human() {
         let registry = HandlerRegistry::new();
         let node = node_with_attrs("shape=hexagon");
         assert_eq!(registry.resolve_handler_type(&node), "wait.human");
