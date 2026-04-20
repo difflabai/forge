@@ -30,8 +30,8 @@ impl NodeHandler for AutoGateHandler {
         let max_iterations = node
             .attrs
             .get("max_iterations")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(5) as usize;
+            .map(|v| v.to_string_value().parse::<usize>().unwrap_or(5))
+            .unwrap_or(5);
 
         let iteration_key = format!("gate.{}.iterations", node.id);
         let current = context
@@ -75,23 +75,23 @@ impl NodeHandler for AutoGateHandler {
                 )
             };
 
-            if let Some(edge) = pass_edge {
-                return Ok(NodeOutcome {
-                    status: NodeStatus::Success,
-                    preferred_label: Some(
-                        edge.attrs.get_str("label").unwrap_or("").to_string(),
-                    ),
-                    suggested_next_ids: vec![edge.to.clone()],
-                    context_updates: updates,
-                    notes: Some(reason),
-                    ..Default::default()
-                });
-            }
-            // No pass edge found — fall through to first edge
+            let edge = pass_edge.copied().or_else(|| edges.first().copied()).ok_or_else(|| {
+                AttractorError::Runtime(format!(
+                    "auto gate '{}': no outgoing edges",
+                    node.id
+                ))
+            })?;
+            let notes = if pass_edge.is_some() {
+                reason
+            } else {
+                format!("{reason} (no pass edge found, falling back to first edge)")
+            };
             return Ok(NodeOutcome {
                 status: NodeStatus::Success,
+                preferred_label: Some(edge.attrs.get_str("label").unwrap_or("").to_string()),
+                suggested_next_ids: vec![edge.to.clone()],
                 context_updates: updates,
-                notes: Some(format!("{reason} (no pass edge found)")),
+                notes: Some(notes),
                 ..Default::default()
             });
         }
@@ -101,26 +101,29 @@ impl NodeHandler for AutoGateHandler {
             "auto gate: findings detected (iteration {}/{})",
             next, max_iterations
         );
-        if let Some(edge) = findings_edge {
-            Ok(NodeOutcome {
-                status: NodeStatus::Success,
-                preferred_label: Some(
-                    edge.attrs.get_str("label").unwrap_or("").to_string(),
-                ),
-                suggested_next_ids: vec![edge.to.clone()],
-                context_updates: updates,
-                notes: Some(reason),
-                ..Default::default()
-            })
+        let edge = findings_edge
+            .copied()
+            .or_else(|| pass_edge.copied())
+            .or_else(|| edges.first().copied())
+            .ok_or_else(|| {
+                AttractorError::Runtime(format!(
+                    "auto gate '{}': no outgoing edges",
+                    node.id
+                ))
+            })?;
+        let notes = if findings_edge.is_some() {
+            reason
         } else {
-            // No findings edge — pass by default
-            Ok(NodeOutcome {
-                status: NodeStatus::Success,
-                context_updates: updates,
-                notes: Some("auto gate: no findings edge, defaulting to pass".to_string()),
-                ..Default::default()
-            })
-        }
+            format!("{reason} (no findings edge, defaulting to pass)")
+        };
+        Ok(NodeOutcome {
+            status: NodeStatus::Success,
+            preferred_label: Some(edge.attrs.get_str("label").unwrap_or("").to_string()),
+            suggested_next_ids: vec![edge.to.clone()],
+            context_updates: updates,
+            notes: Some(notes),
+            ..Default::default()
+        })
     }
 }
 
@@ -153,13 +156,13 @@ fn evaluate_policy(node: &Node, context: &RuntimeContext) -> bool {
 }
 
 fn label_is_pass(label: &str) -> bool {
-    let lower = label.to_ascii_lowercase();
-    lower.contains("[p]") || lower.contains("pass")
+    let lower = label.trim().to_ascii_lowercase();
+    lower.contains("[p]") || lower == "pass" || lower.starts_with("pass ")
 }
 
 fn label_is_findings(label: &str) -> bool {
-    let lower = label.to_ascii_lowercase();
-    lower.contains("[f]") || lower.contains("findings") || lower.contains("finding")
+    let lower = label.trim().to_ascii_lowercase();
+    lower.contains("[f]") || lower == "findings" || lower.starts_with("findings ") || lower == "finding" || lower.starts_with("finding ")
 }
 
 #[cfg(test)]
@@ -286,5 +289,128 @@ mod tests {
             .and_then(|v| v.as_u64())
             .expect("iteration count should exist");
         assert_eq!(updated, 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn auto_gate_string_max_iterations_parses_correctly() {
+        // DOT parsers often surface numeric attributes as strings when quoted.
+        let graph = parse_dot(
+            r#"
+            digraph G {
+                gate [shape=hexagon, auto_policy="findings_empty", max_iterations="2"]
+                fix
+                pass
+                gate -> fix [label="[F] Findings"]
+                gate -> pass [label="[P] Pass"]
+            }
+            "#,
+        )
+        .expect("graph should parse");
+        let node = graph.nodes.get("gate").expect("gate should exist");
+        let mut context = RuntimeContext::new();
+        // Simulate 2 prior iterations — next=3 > 2, should force pass.
+        context.insert(
+            "gate.gate.iterations".to_string(),
+            Value::Number(2.into()),
+        );
+
+        let outcome = AutoGateHandler
+            .execute(node, &context, &graph)
+            .await
+            .expect("execution should succeed");
+
+        assert_eq!(outcome.suggested_next_ids, vec!["pass".to_string()]);
+        assert!(outcome.notes.unwrap().contains("max_iterations reached"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn auto_gate_no_pass_edge_falls_back_to_first_edge() {
+        let graph = parse_dot(
+            r#"
+            digraph G {
+                gate [shape=hexagon, auto_policy="findings_empty", max_iterations=5]
+                fix
+                exit_node
+                gate -> fix [label="[F] Findings"]
+                gate -> exit_node [label="done"]
+            }
+            "#,
+        )
+        .expect("graph should parse");
+        let node = graph.nodes.get("gate").expect("gate should exist");
+        let mut context = RuntimeContext::new();
+        context.insert("findings_count".to_string(), Value::Number(0.into()));
+
+        let outcome = AutoGateHandler
+            .execute(node, &context, &graph)
+            .await
+            .expect("execution should succeed");
+
+        // No pass edge found — should fall back to the first edge (fix) instead
+        // of returning an empty suggested_next_ids that would stall the graph.
+        assert_eq!(outcome.status, NodeStatus::Success);
+        assert_eq!(outcome.suggested_next_ids.len(), 1);
+        assert!(outcome.notes.unwrap().contains("falling back"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn auto_gate_no_findings_edge_falls_back_to_pass_edge() {
+        let graph = parse_dot(
+            r#"
+            digraph G {
+                gate [shape=hexagon, auto_policy="findings_empty", max_iterations=5]
+                pass
+                gate -> pass [label="[P] Pass"]
+            }
+            "#,
+        )
+        .expect("graph should parse");
+        let node = graph.nodes.get("gate").expect("gate should exist");
+        let context = RuntimeContext::new();
+
+        let outcome = AutoGateHandler
+            .execute(node, &context, &graph)
+            .await
+            .expect("execution should succeed");
+
+        // Policy says loop (no findings_count signal), but no findings edge
+        // exists — should fall back to the pass edge rather than stalling.
+        assert_eq!(outcome.status, NodeStatus::Success);
+        assert_eq!(outcome.suggested_next_ids, vec!["pass".to_string()]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn auto_gate_no_outgoing_edges_returns_error() {
+        let graph = parse_dot(
+            r#"
+            digraph G {
+                gate [shape=hexagon, auto_policy="findings_empty", max_iterations=5]
+            }
+            "#,
+        )
+        .expect("graph should parse");
+        let node = graph.nodes.get("gate").expect("gate should exist");
+        let context = RuntimeContext::new();
+
+        let result = AutoGateHandler.execute(node, &context, &graph).await;
+        assert!(result.is_err(), "expected error when gate has no outgoing edges");
+    }
+
+    #[test]
+    fn label_is_pass_does_not_match_bypass() {
+        assert!(!label_is_pass("bypass"));
+        assert!(!label_is_pass("Bypass Review"));
+        assert!(label_is_pass("[P] Pass"));
+        assert!(label_is_pass("Pass"));
+        assert!(label_is_pass("pass to next"));
+    }
+
+    #[test]
+    fn label_is_findings_does_not_match_no_findings() {
+        assert!(!label_is_findings("no findings"));
+        assert!(label_is_findings("[F] Findings"));
+        assert!(label_is_findings("Findings"));
+        assert!(label_is_findings("findings detected"));
+        assert!(label_is_findings("Finding"));
     }
 }
