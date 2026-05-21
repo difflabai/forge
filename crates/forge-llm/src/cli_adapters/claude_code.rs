@@ -44,7 +44,12 @@ impl ClaudeCodeAgentProvider {
             .arg(prompt)
             .arg("--output-format")
             .arg("stream-json")
-            .arg("--verbose");
+            .arg("--verbose")
+            // The spawned session has stdin=null so it cannot answer
+            // permission prompts. Without this flag every tool call gets
+            // silently denied and the stage degenerates into "partial_success
+            // with N tool errors" without actually doing work.
+            .arg("--dangerously-skip-permissions");
 
         let model = options
             .model_override
