@@ -44,12 +44,17 @@ impl ClaudeCodeAgentProvider {
             .arg(prompt)
             .arg("--output-format")
             .arg("stream-json")
-            .arg("--verbose")
-            // The spawned session has stdin=null so it cannot answer
-            // permission prompts. Without this flag every tool call gets
-            // silently denied and the stage degenerates into "partial_success
-            // with N tool errors" without actually doing work.
-            .arg("--dangerously-skip-permissions");
+            .arg("--verbose");
+
+        // The spawned session has stdin=null so it cannot answer permission
+        // prompts. With auto_approve_tools=false (the default), every tool
+        // call gets silently denied — the stage looks "complete" but the
+        // tool_result events all have is_error=true and the agent reports
+        // partial_success without doing real work. Callers running stages
+        // non-interactively must opt in via AgentRunOptions::auto_approve_tools.
+        if options.auto_approve_tools {
+            cmd.arg("--dangerously-skip-permissions");
+        }
 
         let model = options
             .model_override
