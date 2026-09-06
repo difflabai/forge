@@ -53,6 +53,17 @@ pub struct AgentRunOptions {
     pub env_vars: Option<HashMap<String, String>>,
     /// Real-time event callback for observability.
     pub on_event: Option<Arc<dyn Fn(AgentLoopEvent) + Send + Sync>>,
+    /// Skip per-tool-call permission prompts.
+    ///
+    /// Required for CLI adapters (Claude Code, Codex, Gemini) that run with
+    /// `stdin=null`: without this they hang at the first permission prompt
+    /// and every tool call gets silently denied. Defaults to `false` so
+    /// library consumers explicitly opt in; the pipeline runtime
+    /// (`AgentProviderSubmitter`) sets it to `true` because pipeline stages
+    /// run non-interactively by design.
+    ///
+    /// Maps to `--dangerously-skip-permissions` on the Claude Code adapter.
+    pub auto_approve_tools: bool,
 }
 
 impl std::fmt::Debug for AgentRunOptions {
@@ -66,6 +77,7 @@ impl std::fmt::Debug for AgentRunOptions {
             .field("system_prompt_override", &self.system_prompt_override)
             .field("env_vars", &self.env_vars)
             .field("on_event", &self.on_event.as_ref().map(|_| "..."))
+            .field("auto_approve_tools", &self.auto_approve_tools)
             .finish()
     }
 }

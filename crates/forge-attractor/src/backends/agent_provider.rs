@@ -46,6 +46,10 @@ impl AgentSubmitter for AgentProviderSubmitter {
             model_override: options.model,
             reasoning_effort: options.reasoning_effort,
             system_prompt_override: options.system_prompt_override,
+            // Pipeline stages run with stdin=null by design. CLI adapters
+            // (Claude Code, etc.) need permission prompts skipped or every
+            // tool call gets silently denied. See AgentRunOptions doc.
+            auto_approve_tools: true,
             ..Default::default()
         };
 
