@@ -7,8 +7,11 @@ use serde_json::Value;
 /// Handler for automatic gate nodes (hexagon shape with `auto_policy` attribute).
 ///
 /// Supports:
-/// - `max_iterations` — hard cap on how many times the gate's loop can cycle.
-///   When exceeded, the gate forces the "pass" edge.
+/// - `max_iterations` — total cap on how many times this gate may evaluate.
+///   `max_iterations=N` means "at most N evaluations" — the Nth evaluation
+///   force-passes if the policy is still unsatisfied. So `max_iterations=3`
+///   permits up to 2 findings → refine cycles, with the 3rd gate visit always
+///   advancing the pipeline.
 /// - `auto_policy="findings_empty"` — routes to the "pass" edge when no findings
 ///   are detected in the runtime context, otherwise routes to the "findings" edge.
 ///
@@ -16,6 +19,13 @@ use serde_json::Value;
 ///
 /// Edge detection uses the `[P]` / `[F]` accelerator-key convention from the DOT
 /// edge labels (e.g. `[P] Pass`, `[F] Findings`).
+///
+/// **Known limitation:** the `findings_empty` policy reads `findings_count` from
+/// the runtime context, but agent-driven box stages have no built-in path to
+/// write context variables — so for those stages the policy is effectively
+/// "always_loop_until_max_iterations". The structural fix (parse agent stdout
+/// for a `findings_count=N` line or surface it via output_schema) is tracked
+/// separately; until then, set `max_iterations` low to bound wasted refines.
 #[derive(Debug, Default)]
 pub struct AutoGateHandler;
 
@@ -50,7 +60,10 @@ impl NodeHandler for AutoGateHandler {
             label_is_findings(label)
         });
 
-        let force_pass = next > max_iterations;
+        // Force-pass on the Nth evaluation when max_iterations=N, so the gate
+        // total visit count never exceeds max_iterations. Previously this used
+        // `>`, which silently permitted one extra refine cycle per gate.
+        let force_pass = next >= max_iterations;
         let policy_pass = if !force_pass {
             evaluate_policy(node, context)
         } else {
@@ -225,6 +238,40 @@ mod tests {
             .expect("execution should succeed");
 
         assert_eq!(outcome.status, NodeStatus::Success);
+        assert_eq!(outcome.suggested_next_ids, vec!["pass".to_string()]);
+        assert!(outcome.notes.unwrap().contains("max_iterations reached"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn auto_gate_at_nth_visit_with_findings_force_passes() {
+        // Regression: previously `force_pass = next > max_iterations` permitted
+        // an extra refine cycle past the cap. The 3rd visit to a max=3 gate
+        // with findings still present must now force-pass instead of looping.
+        let graph = parse_dot(
+            r#"
+            digraph G {
+                gate [shape=hexagon, auto_policy="findings_empty", max_iterations=3]
+                fix
+                pass
+                gate -> fix [label="[F] Findings"]
+                gate -> pass [label="[P] Pass"]
+            }
+            "#,
+        )
+        .expect("graph should parse");
+        let node = graph.nodes.get("gate").expect("gate should exist");
+        let mut context = RuntimeContext::new();
+        // 2 prior iterations → this is the 3rd visit, equal to the cap.
+        context.insert(
+            "gate.gate.iterations".to_string(),
+            Value::Number(2.into()),
+        );
+
+        let outcome = AutoGateHandler
+            .execute(node, &context, &graph)
+            .await
+            .expect("execution should succeed");
+
         assert_eq!(outcome.suggested_next_ids, vec!["pass".to_string()]);
         assert!(outcome.notes.unwrap().contains("max_iterations reached"));
     }
