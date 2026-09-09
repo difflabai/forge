@@ -55,7 +55,7 @@ For reference on DOT syntax, see the Graphviz DOT language specification: https:
 
 Attractor defines the orchestration layer: graph definition, traversal, state management, and extensibility. It does NOT require any specific LLM integration. The codergen handler (Section 4.5) needs a way to call an LLM and get a response -- how you provide that is up to you.
 
-The codergen handler takes a backend that conforms to the `CodergenBackend` interface (Section 4.5). What that backend does internally is entirely up to the implementor -- use the companion [Coding Agent Loop](./coding-agent-loop-spec.md) and [Unified LLM Client](./unified-llm-spec.md) specs, spawn CLI agents (Claude Code, Codex, Gemini CLI) in subprocesses, run agents in tmux panes with a manager attaching to them, call an LLM API directly, or anything else. The pipeline definition (the DOT file) does not change regardless of backend choice.
+The codergen handler takes a backend that conforms to the `CodergenBackend` interface (Section 4.5). What that backend does internally is entirely up to the implementor -- use the companion [Coding Agent Loop](./02-coding-agent-loop-spec.md) and [Unified LLM Client](./01-unified-llm-spec.md) specs, spawn CLI agents (Claude Code, Codex, Gemini CLI) in subprocesses, run agents in tmux panes with a manager attaching to them, call an LLM API directly, or anything else. The pipeline definition (the DOT file) does not change regardless of backend choice.
 
 Attractor pipelines are driven by an event stream (Section 9.6). TUI, web, and IDE frontends consume events and submit human-in-the-loop answers. The pipeline engine is headless; the presentation layer is separate.
 
